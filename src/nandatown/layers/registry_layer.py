@@ -8,6 +8,7 @@ cards ranked by trust.
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from . import register
@@ -66,10 +67,19 @@ class OwnedIndex(TownIndex):
     can update it, and only a request signed by that key can withdraw it.
     An unverified card for an unclaimed name is still stored unverified,
     as in index.v1, and does not claim the name.
+
+    Cards are copied on the way in and on the way out, so a caller that
+    keeps or edits a card dict cannot change a stored listing without a
+    signed update.
     """
+
+    def lookup(self, capability: str,
+               include_unverified: bool = False) -> list[dict[str, Any]]:
+        return copy.deepcopy(super().lookup(capability, include_unverified))
 
     def publish(self, publisher: str, card: dict[str, Any],
                 signature: str) -> bool:
+        card = copy.deepcopy(card)
         current = self.cards.get(card["name"])
         if current is None or not current["verified"]:
             return super().publish(publisher, card, signature)

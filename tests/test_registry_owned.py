@@ -137,3 +137,30 @@ def test_unowned_control_fails_because_the_listing_was_erased(tmp_path):
     events = load_bundle(bundle_dir)["events"]
     paid = [e.detail["to"] for e in events if e.kind == "escrow_released"]
     assert paid == ["seller-rival"]
+
+
+def test_lookup_results_are_copies():
+    engine = town("index.owned.v1")
+    registry = engine.layers["registry"]
+    registry.publish("honest", *signed_card(engine, "honest", "honest"))
+
+    found = registry.lookup("sell.widget")[0]
+    found["capabilities"].clear()
+    found["facts"]["note"] = "tampered"
+
+    assert registry.names_with("sell.widget") == ["honest"]
+    assert registry.cards["honest"]["card"]["facts"] == {}
+
+
+def test_published_card_is_snapshotted():
+    engine = town("index.owned.v1")
+    registry = engine.layers["registry"]
+    card, signature = signed_card(engine, "honest", "honest")
+    assert registry.publish("honest", card, signature)
+
+    card["capabilities"].clear()
+    card["facts"]["note"] = "tampered"
+
+    assert registry.names_with("sell.widget") == ["honest"]
+    assert registry.cards["honest"]["card"]["facts"] == {}
+
