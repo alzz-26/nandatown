@@ -70,8 +70,17 @@ class OwnedIndex(TownIndex):
 
     Cards are copied on the way in and on the way out, so a caller that
     keeps or edits a card dict cannot change a stored listing without a
-    signed update.
+    signed update. Each name has a generation that moves on every change
+    to its verified listing; a withdrawal signs the current generation,
+    so it removes that listing once and is useless afterwards.
     """
+
+    def __init__(self, engine):
+        super().__init__(engine)
+        self.generations: dict[str, int] = {}
+
+    def _changed(self, name: str) -> None:
+        self.generations[name] = self.generations.get(name, 0) + 1
 
     def lookup(self, capability: str,
                include_unverified: bool = False) -> list[dict[str, Any]]:
@@ -82,11 +91,15 @@ class OwnedIndex(TownIndex):
         card = copy.deepcopy(card)
         current = self.cards.get(card["name"])
         if current is None or not current["verified"]:
-            return super().publish(publisher, card, signature)
+            verified = super().publish(publisher, card, signature)
+            if verified:
+                self._changed(card["name"])
+            return verified
         auth = self.engine.layers["auth"]
         if auth.verify(card["name"], card, signature, subject=card["name"]):
             self.cards[card["name"]] = {"card": card, "verified": True,
                                         "publisher": publisher}
+            self._changed(card["name"])
             self.engine.emit("town", "card_registered", card["name"],
                              {"capabilities": card["capabilities"],
                               "verified": True, "update": True})
@@ -97,13 +110,14 @@ class OwnedIndex(TownIndex):
                           "reason": "not signed by the listing's key"})
         return False
 
-    @staticmethod
-    def withdrawal(name: str, card: dict[str, Any]) -> dict[str, Any]:
-        """The payload an owner signs to withdraw this exact listing.
-        Binding the card's fingerprint stops a captured withdrawal from
-        removing a later, different listing under the same name."""
+    def withdrawal(self, name: str, card: dict[str, Any]) -> dict[str, Any]:
+        """The payload an owner signs to withdraw this exact listing once.
+        It binds the card's fingerprint and the name's current generation,
+        so a captured withdrawal cannot remove a later listing, even one
+        identical to the card it was signed for (A, then B, then A)."""
         return {"action": "withdraw", "name": name,
-                "card": fingerprint(card)}
+                "card": fingerprint(card),
+                "generation": self.generations.get(name, 0)}
 
     def withdraw(self, requester: str, name: str, signature: str) -> bool:
         current = self.cards.get(name)
@@ -120,6 +134,7 @@ class OwnedIndex(TownIndex):
                               "reason": "not signed by the listing's key"})
             return False
         del self.cards[name]
+        self._changed(name)
         self.engine.emit("town", "card_withdrawn", name,
                          {"requester": requester})
         return True

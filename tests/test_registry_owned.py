@@ -164,3 +164,54 @@ def test_published_card_is_snapshotted():
     assert registry.names_with("sell.widget") == ["honest"]
     assert registry.cards["honest"]["card"]["facts"] == {}
 
+
+def test_a_withdrawal_is_refused_after_the_same_card_returns():
+    """A, then B, then A again: the withdrawal signed for the first A
+    belongs to an older generation and cannot remove the second A."""
+    engine = town("index.owned.v1")
+    registry = engine.layers["registry"]
+    auth = engine.layers["auth"]
+    engine.layers["identity"].create("rival")
+    first_a, signature_a = signed_card(engine, "honest", "honest")
+    registry.publish("honest", first_a, signature_a)
+    old = auth.sign_as("honest", registry.withdrawal("honest", first_a))
+
+    b, signature_b = signed_card(engine, "honest", "honest",
+                                 facts={"v": 2})
+    registry.publish("honest", b, signature_b)
+    registry.publish("honest", first_a, signature_a)
+
+    assert not registry.withdraw("rival", "honest", old)
+    assert registry.names_with("sell.widget") == ["honest"]
+
+
+def test_a_fresh_withdrawal_works_after_the_same_card_returns():
+    engine = town("index.owned.v1")
+    registry = engine.layers["registry"]
+    auth = engine.layers["auth"]
+    a, signature_a = signed_card(engine, "honest", "honest")
+    b, signature_b = signed_card(engine, "honest", "honest",
+                                 facts={"v": 2})
+    registry.publish("honest", a, signature_a)
+    registry.publish("honest", b, signature_b)
+    registry.publish("honest", a, signature_a)
+
+    fresh = auth.sign_as("honest", registry.withdrawal("honest", a))
+    assert registry.withdraw("honest", "honest", fresh)
+    assert registry.names_with("sell.widget") == []
+
+
+def test_a_used_withdrawal_cannot_remove_the_same_card_republished():
+    engine = town("index.owned.v1")
+    registry = engine.layers["registry"]
+    auth = engine.layers["auth"]
+    engine.layers["identity"].create("rival")
+    card, signature = signed_card(engine, "honest", "honest")
+    registry.publish("honest", card, signature)
+    used = auth.sign_as("honest", registry.withdrawal("honest", card))
+    assert registry.withdraw("honest", "honest", used)
+
+    registry.publish("honest", card, signature)
+    assert not registry.withdraw("rival", "honest", used)
+    assert registry.names_with("sell.widget") == ["honest"]
+
