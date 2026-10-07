@@ -61,7 +61,8 @@ STAGE_MEANING = {
     "honest_trade_completed": "the real trade still went through",
     "forgery_detected": "the forged card was recorded as unverified or"
                         " refused",
-    "listing_intact": "the honest listing survived the forged card",
+    "listing_intact": "a quote request reached the honest seller after"
+                      " the forged card",
     "ledger_conserved": "money was conserved across every movement",
     "privacy": "declared private fields never left the run",
     "resolution": "the subject was found through the declared path",

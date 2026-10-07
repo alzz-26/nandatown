@@ -1,9 +1,11 @@
 """index.owned.v1: a forged card cannot erase or withdraw a listing."""
 
 from nandatown.bundle import load_bundle, verify_bundle
+from nandatown.records import TownEvent
 from nandatown.sim.engine import Engine
 from nandatown.sim.runner import run_lab
-from nandatown.sim.scenario import ScenarioSpec
+from nandatown.sim.scenario import ScenarioSpec, load_bundled
+from nandatown.sim.validators import VALIDATORS, Trace
 
 
 def town(registry: str) -> Engine:
@@ -215,3 +217,52 @@ def test_a_used_withdrawal_cannot_remove_the_same_card_republished():
     assert not registry.withdraw("rival", "honest", used)
     assert registry.names_with("sell.widget") == ["honest"]
 
+
+def event(n, event_kind, subject, observer="town", **detail):
+    return TownEvent(event_id=f"ev-{n}", run_id="run", at=float(n),
+                     observer=observer, kind=event_kind, subject=subject,
+                     detail=detail)
+
+
+FORGERY = event(1, "card_unverified", "seller-honest",
+                publisher="seller-rival", capabilities=["sell.widget"])
+
+
+def judge(events):
+    spec = load_bundled("registry_eviction")
+    stages = VALIDATORS["registry_eviction"](spec, Trace(events))
+    return {s.name: s.status for s in stages}
+
+
+def test_listing_intact_needs_the_request_to_arrive():
+    """A quote request sent after the forgery but refused on delivery
+    does not show the honest seller was reachable."""
+    sent = event(2, "message_sent", "m-1", observer="buyer-1",
+                 to="seller-honest", kind="quote_request")
+    delivered = event(3, "message_delivered", "m-1",
+                      to="seller-honest", kind="quote_request")
+    failed = event(4, "delivery_failed", "m-1", to="seller-honest",
+                   reason="bad signature")
+
+    assert judge([FORGERY, sent, delivered])["listing_intact"] == "passed"
+    assert judge([FORGERY, sent, delivered, failed])["listing_intact"]         == "failed"
+    assert judge([FORGERY, sent])["listing_intact"] == "failed"
+
+
+def test_honest_trade_needs_an_order_placed_after_the_forgery():
+    """A payment to the honest seller from before the forgery, or for an
+    order the post-forgery workflow never placed, does not count."""
+    early_pay = event(0, "escrow_released", "order-0",
+                      to="seller-honest", cents=3780)
+    order = event(2, "message_sent", "m-2", observer="buyer-1",
+                  to="seller-honest", kind="purchase_order",
+                  body={"order_id": "order-1", "quantity": 2})
+    pay = event(3, "escrow_released", "order-1", to="seller-honest",
+                cents=3780)
+    other_pay = event(3, "escrow_released", "order-9",
+                      to="seller-honest", cents=3780)
+
+    stage = "honest_trade_completed"
+    assert judge([early_pay, FORGERY])[stage] == "failed"
+    assert judge([FORGERY, order, other_pay])[stage] == "failed"
+    assert judge([FORGERY, order, pay])[stage] == "passed"
