@@ -15,9 +15,11 @@ def town(registry: str) -> Engine:
 
 
 def signed_card(engine, name, signer, capabilities=("sell.widget",),
-                facts=None):
+                facts=None, version=None):
     card = engine.layers["identity"].card(name, list(capabilities),
                                           facts or {})
+    if version is not None:
+        card["version"] = version
     engine.layers["identity"].create(signer)
     return card, engine.layers["auth"].sign_as(signer, card)
 
@@ -57,7 +59,8 @@ def test_owner_can_update_its_listing():
     registry = engine.layers["registry"]
     registry.publish("honest", *signed_card(engine, "honest", "honest"))
     updated, signature = signed_card(engine, "honest", "honest",
-                                     capabilities=("sell.gadget",))
+                                     capabilities=("sell.gadget",),
+                                     version=2)
     assert registry.publish("honest", updated, signature)
     assert registry.names_with("sell.widget") == []
     assert registry.names_with("sell.gadget") == ["honest"]
@@ -107,7 +110,7 @@ def test_a_replayed_withdrawal_cannot_remove_a_newer_listing():
     assert registry.withdraw("honest", "honest", old)
 
     second, signature = signed_card(engine, "honest", "honest",
-                                    facts={"reopened": True})
+                                    facts={"reopened": True}, version=2)
     registry.publish("honest", second, signature)
     assert not registry.withdraw("rival", "honest", old)
     assert registry.names_with("sell.widget") == ["honest"]
@@ -167,43 +170,42 @@ def test_published_card_is_snapshotted():
     assert registry.cards["honest"]["card"]["facts"] == {}
 
 
-def test_a_withdrawal_is_refused_after_the_same_card_returns():
-    """A, then B, then A again: the withdrawal signed for the first A
-    belongs to an older generation and cannot remove the second A."""
+def test_an_old_withdrawal_is_refused_after_later_updates():
+    """A withdrawal signed for an earlier listing cannot remove a later
+    one, even one with the same capabilities and facts."""
     engine = town("index.owned.v1")
     registry = engine.layers["registry"]
     auth = engine.layers["auth"]
     engine.layers["identity"].create("rival")
-    first_a, signature_a = signed_card(engine, "honest", "honest")
-    registry.publish("honest", first_a, signature_a)
-    old = auth.sign_as("honest", registry.withdrawal("honest", first_a))
+    first, signature = signed_card(engine, "honest", "honest")
+    registry.publish("honest", first, signature)
+    old = auth.sign_as("honest", registry.withdrawal("honest", first))
 
-    b, signature_b = signed_card(engine, "honest", "honest",
-                                 facts={"v": 2})
-    registry.publish("honest", b, signature_b)
-    registry.publish("honest", first_a, signature_a)
+    registry.publish("honest", *signed_card(engine, "honest", "honest",
+                                            facts={"v": 2}, version=2))
+    registry.publish("honest", *signed_card(engine, "honest", "honest",
+                                            version=3))
 
     assert not registry.withdraw("rival", "honest", old)
     assert registry.names_with("sell.widget") == ["honest"]
 
 
-def test_a_fresh_withdrawal_works_after_the_same_card_returns():
+def test_a_fresh_withdrawal_works_after_updates():
     engine = town("index.owned.v1")
     registry = engine.layers["registry"]
     auth = engine.layers["auth"]
-    a, signature_a = signed_card(engine, "honest", "honest")
-    b, signature_b = signed_card(engine, "honest", "honest",
-                                 facts={"v": 2})
-    registry.publish("honest", a, signature_a)
-    registry.publish("honest", b, signature_b)
-    registry.publish("honest", a, signature_a)
+    registry.publish("honest", *signed_card(engine, "honest", "honest"))
+    registry.publish("honest", *signed_card(engine, "honest", "honest",
+                                            facts={"v": 2}, version=2))
+    current, signature = signed_card(engine, "honest", "honest", version=3)
+    registry.publish("honest", current, signature)
 
-    fresh = auth.sign_as("honest", registry.withdrawal("honest", a))
+    fresh = auth.sign_as("honest", registry.withdrawal("honest", current))
     assert registry.withdraw("honest", "honest", fresh)
     assert registry.names_with("sell.widget") == []
 
 
-def test_a_used_withdrawal_cannot_remove_the_same_card_republished():
+def test_a_used_withdrawal_cannot_remove_a_later_listing():
     engine = town("index.owned.v1")
     registry = engine.layers["registry"]
     auth = engine.layers["auth"]
@@ -213,9 +215,74 @@ def test_a_used_withdrawal_cannot_remove_the_same_card_republished():
     used = auth.sign_as("honest", registry.withdrawal("honest", card))
     assert registry.withdraw("honest", "honest", used)
 
-    registry.publish("honest", card, signature)
+    registry.publish("honest", *signed_card(engine, "honest", "honest",
+                                            version=2))
     assert not registry.withdraw("rival", "honest", used)
     assert registry.names_with("sell.widget") == ["honest"]
+
+
+def test_a_replayed_old_card_cannot_roll_back_an_update():
+    """A, then B: whoever kept the signed A cannot publish it again."""
+    engine = town("index.owned.v1")
+    registry = engine.layers["registry"]
+    a, signature_a = signed_card(engine, "honest", "honest")
+    registry.publish("honest", a, signature_a)
+    b, signature_b = signed_card(engine, "honest", "honest",
+                                 capabilities=("sell.gadget",), version=2)
+    assert registry.publish("honest", b, signature_b)
+
+    assert not registry.publish("rival", a, signature_a)
+    assert registry.cards["honest"]["card"] == b
+    assert engine.events[-1].kind == "card_publish_refused"
+    assert "version" in engine.events[-1].detail["reason"]
+
+
+def test_a_replayed_card_cannot_bring_back_a_withdrawn_listing():
+    engine = town("index.owned.v1")
+    registry = engine.layers["registry"]
+    auth = engine.layers["auth"]
+    card, signature = signed_card(engine, "honest", "honest")
+    registry.publish("honest", card, signature)
+    request = auth.sign_as("honest", registry.withdrawal("honest", card))
+    assert registry.withdraw("honest", "honest", request)
+
+    assert not registry.publish("rival", card, signature)
+    assert registry.names_with("sell.widget") == []
+
+    comeback, signature = signed_card(engine, "honest", "honest", version=2)
+    assert registry.publish("honest", comeback, signature)
+    assert registry.names_with("sell.widget") == ["honest"]
+
+
+def test_an_update_must_raise_the_version():
+    """Cards without a version count as version 1; an update at the same
+    version is refused, a higher one is accepted."""
+    engine = town("index.owned.v1")
+    registry = engine.layers["registry"]
+    registry.publish("honest", *signed_card(engine, "honest", "honest"))
+
+    assert not registry.publish("honest", *signed_card(
+        engine, "honest", "honest", capabilities=("sell.gadget",)))
+    assert not registry.publish("honest", *signed_card(
+        engine, "honest", "honest", capabilities=("sell.gadget",),
+        version=1))
+    assert registry.names_with("sell.widget") == ["honest"]
+    assert registry.publish("honest", *signed_card(
+        engine, "honest", "honest", capabilities=("sell.gadget",),
+        version=5))
+    assert registry.names_with("sell.gadget") == ["honest"]
+
+
+def test_a_malformed_version_is_refused():
+    for version in (0, -1, "2", 2.0, True, None):
+        engine = town("index.owned.v1")
+        registry = engine.layers["registry"]
+        card, signature = signed_card(engine, "honest", "honest")
+        card["version"] = version
+        signature = engine.layers["auth"].sign_as("honest", card)
+        assert not registry.publish("honest", card, signature), version
+        assert registry.names_with("sell.widget") == []
+        assert engine.events[-1].kind == "card_publish_refused"
 
 
 def event(n, event_kind, subject, observer="town", **detail):

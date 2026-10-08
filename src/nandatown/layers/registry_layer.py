@@ -73,11 +73,19 @@ class OwnedIndex(TownIndex):
     signed update. Each name has a generation that moves on every change
     to its verified listing; a withdrawal signs the current generation,
     so it removes that listing once and is useless afterwards.
+
+    A card carries a version, an integer of at least 1; a card without
+    one is version 1. The registry remembers the highest version it has
+    accepted for each name, also after a withdrawal, and refuses any card
+    at or below it. So a signed card is valid once: replaying an older
+    one cannot roll an update back or bring a withdrawn listing back, and
+    an owner updates or returns by publishing a higher version.
     """
 
     def __init__(self, engine):
         super().__init__(engine)
         self.generations: dict[str, int] = {}
+        self.versions: dict[str, int] = {}
 
     def _changed(self, name: str) -> None:
         self.generations[name] = self.generations.get(name, 0) + 1
@@ -89,25 +97,45 @@ class OwnedIndex(TownIndex):
     def publish(self, publisher: str, card: dict[str, Any],
                 signature: str) -> bool:
         card = copy.deepcopy(card)
-        current = self.cards.get(card["name"])
+        name = card["name"]
+        version = card.get("version", 1)
+        if type(version) is not int or version < 1:
+            return self._refuse(card, publisher,
+                                "version must be an integer of at least 1")
+        highest = self.versions.get(name)
+        stale = f"version {version} is not above {highest}"
+        current = self.cards.get(name)
         if current is None or not current["verified"]:
+            if highest is not None and version <= highest:
+                return self._refuse(card, publisher, stale)
             verified = super().publish(publisher, card, signature)
             if verified:
-                self._changed(card["name"])
+                self._accepted(name, version)
             return verified
         auth = self.engine.layers["auth"]
-        if auth.verify(card["name"], card, signature, subject=card["name"]):
-            self.cards[card["name"]] = {"card": card, "verified": True,
-                                        "publisher": publisher}
-            self._changed(card["name"])
-            self.engine.emit("town", "card_registered", card["name"],
-                             {"capabilities": card["capabilities"],
-                              "verified": True, "update": True})
-            return True
+        if not auth.verify(name, card, signature, subject=name):
+            return self._refuse(card, publisher,
+                                "not signed by the listing's key")
+        if version <= highest:
+            return self._refuse(card, publisher, stale)
+        self.cards[name] = {"card": card, "verified": True,
+                            "publisher": publisher}
+        self._accepted(name, version)
+        self.engine.emit("town", "card_registered", name,
+                         {"capabilities": card["capabilities"],
+                          "verified": True, "update": True,
+                          "version": version})
+        return True
+
+    def _accepted(self, name: str, version: int) -> None:
+        self.versions[name] = version
+        self._changed(name)
+
+    def _refuse(self, card: dict[str, Any], publisher: str,
+                reason: str) -> bool:
         self.engine.emit("town", "card_publish_refused", card["name"],
                          {"capabilities": card["capabilities"],
-                          "publisher": publisher,
-                          "reason": "not signed by the listing's key"})
+                          "publisher": publisher, "reason": reason})
         return False
 
     def withdrawal(self, name: str, card: dict[str, Any]) -> dict[str, Any]:
