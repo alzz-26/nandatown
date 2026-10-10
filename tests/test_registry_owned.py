@@ -2,6 +2,7 @@
 
 from nandatown.bundle import load_bundle, verify_bundle
 from nandatown.records import TownEvent
+from nandatown.sim.api import TownAPI
 from nandatown.sim.engine import Engine
 from nandatown.sim.runner import run_lab
 from nandatown.sim.scenario import ScenarioSpec, load_bundled
@@ -333,3 +334,31 @@ def test_honest_trade_needs_an_order_placed_after_the_forgery():
     assert judge([early_pay, FORGERY])[stage] == "failed"
     assert judge([FORGERY, order, other_pay])[stage] == "failed"
     assert judge([FORGERY, order, pay])[stage] == "passed"
+
+
+def test_an_agent_updates_its_listing_through_the_api():
+    engine = town("index.owned.v1")
+    registry = engine.layers["registry"]
+    api = TownAPI(engine, "honest")
+
+    assert api.register(["sell.widget"])
+    assert api.register(["sell.gadget"], version=2)
+
+    assert registry.names_with("sell.widget") == []
+    assert registry.names_with("sell.gadget") == ["honest"]
+
+
+def test_an_agent_returns_after_withdrawal_through_the_api():
+    engine = town("index.owned.v1")
+    registry = engine.layers["registry"]
+    auth = engine.layers["auth"]
+    api = TownAPI(engine, "honest")
+
+    assert api.register(["sell.widget"])
+    card = registry.cards["honest"]["card"]
+    request = auth.sign_as("honest", registry.withdrawal("honest", card))
+    assert registry.withdraw("honest", "honest", request)
+    assert registry.names_with("sell.widget") == []
+
+    assert api.register(["sell.widget"], version=2)
+    assert registry.names_with("sell.widget") == ["honest"]

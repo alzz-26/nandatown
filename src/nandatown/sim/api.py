@@ -56,21 +56,28 @@ class TownAPI:
 
     def register(self, capabilities: list[str],
                  facts: dict[str, Any] | None = None,
-                 forge_key_of: str | None = None) -> bool:
+                 forge_key_of: str | None = None,
+                 version: int | None = None) -> bool:
         """Publish this agent's card. A spoofer can try to sign with a
-        forged key by naming another agent; verification then fails."""
+        forged key by naming another agent; verification then fails.
+        A version, when given, is put on the card before signing and an
+        owned registry needs a higher version to update or return."""
         identity = self._engine.layers["identity"]
         auth = self._engine.layers["auth"]
         registry = self._engine.layers["registry"]
         card = identity.card(self.name, capabilities, facts or {})
+        if version is not None:
+            card["version"] = version
         signer = forge_key_of or self.name
         if forge_key_of:
             identity.create(forge_key_of)
             signature = auth.sign_as(signer, dict(card, name=forge_key_of))
         else:
             signature = auth.sign_as(signer, card)
-        self._engine.record_intent(self.name, "register",
-                                   {"capabilities": capabilities})
+        payload = {"capabilities": capabilities}
+        if version is not None:
+            payload["version"] = version
+        self._engine.record_intent(self.name, "register", payload)
         return registry.publish(self.name, card, signature)
 
     def lookup(self, capability: str) -> list[dict[str, Any]]:
