@@ -1055,8 +1055,9 @@ def registry_eviction(spec, trace: Trace) -> list[StageResult]:
     """A forged card must not erase the listing it names: the forgery
     is recorded, a quote request still arrives at the honest seller
     after it, and the honest seller is paid for an order placed after
-    it. Requests that were only sent, and payments for orders placed
-    before the forgery, do not count."""
+    it. Requests that were only sent, payments for orders placed
+    before the forgery, and payments logged before their own orders
+    do not count."""
     stages = []
     victims = {a.config.get("victim") for a in spec.agents
                if a.role == "rival_forger"} - {None}
@@ -1093,11 +1094,12 @@ def registry_eviction(spec, trace: Trace) -> list[StageResult]:
     for e in sent_after("purchase_order"):
         body = e.detail.get("body")
         if isinstance(body, dict) and isinstance(body.get("order_id"), str):
-            orders[body["order_id"]] = e.detail["to"]
+            orders[body["order_id"]] = (e.detail["to"], trace.index(e))
     released = trace.find("escrow_released")
     paid = [e for e in released
             if trace.index(e) > after and e.subject in orders
-            and e.detail.get("to") == orders[e.subject]]
+            and e.detail.get("to") == orders[e.subject][0]
+            and trace.index(e) > orders[e.subject][1]]
     stages.append(_check(
         "honest_trade_completed", bool(paid),
         _event_ids(paid or released) or trace.ids("run_finished"),

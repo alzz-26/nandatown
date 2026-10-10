@@ -336,6 +336,19 @@ def test_honest_trade_needs_an_order_placed_after_the_forgery():
     assert judge([FORGERY, order, pay])[stage] == "passed"
 
 
+def test_honest_trade_needs_the_order_before_its_payment():
+    """A release logged before the purchase order it matches does not
+    count, even when both come after the forgery."""
+    pay = event(2, "escrow_released", "order-1", to="seller-honest",
+                cents=3780)
+    order = event(3, "message_sent", "m-2", observer="buyer-1",
+                  to="seller-honest", kind="purchase_order",
+                  body={"order_id": "order-1", "quantity": 2})
+
+    assert judge([FORGERY, pay, order])["honest_trade_completed"] \
+        == "failed"
+
+
 def test_an_agent_updates_its_listing_through_the_api():
     engine = town("index.owned.v1")
     registry = engine.layers["registry"]
